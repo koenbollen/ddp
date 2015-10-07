@@ -7,8 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"strconv"
-	"strings"
 	"syscall"
 	"time"
 	"unicode"
@@ -55,7 +53,7 @@ func main() {
 	bar.Output = os.Stderr
 	started := false
 
-	OutputScanner(io.Reader(output), func(bytes int64) {
+	OutputScanner(io.Reader(output), os.Stderr, func(bytes int64) {
 		if !started {
 			started = true
 			bar.Start()
@@ -77,75 +75,17 @@ func main() {
 	}
 }
 
-func GuessTargetSize(args []string) int64 {
-	var ifile string
-	var bs, count, skip int64
-	for _, arg := range args[1:] {
-		parts := strings.Split(arg, "=")
-		if len(parts) == 2 {
-			key, value := parts[0], parts[1]
-			switch key {
-			case "if":
-				ifile = value
-			case "bs":
-				bs = ParseByteUnits(value)
-			case "count":
-				count = ParseByteUnits(value)
-			case "skip":
-				skip = ParseByteUnits(value)
-			case "iseek":
-				skip = ParseByteUnits(value)
-			}
-		}
-	}
-	filesize := int64(0)
-	stat, _ := os.Stat(ifile)
-	if stat != nil {
-		filesize = stat.Size()
-	}
-
-	size := bs * (count - skip)
-	if filesize > size {
-		return filesize
-	}
-	return size
-}
-
-func ParseByteUnits(in string) int64 {
-	units := map[string]int64{
-		"kb": 1000,
-		"mb": 1000 * 1000,
-		"gb": 1000 * 1000 * 1000,
-		"tb": 1000 * 1000 * 1000 * 1000,
-		"k":  1024,
-		"m":  1024 * 1024,
-		"g":  1024 * 1024 * 1024,
-		"t":  1024 * 1024 * 1024 * 1024,
-	}
-	in = strings.ToLower(in)
-	mul := int64(1)
-	for unit, _ := range units {
-		if strings.HasSuffix(in, unit) {
-			mul = units[unit]
-			in = strings.TrimSuffix(in, unit)
-			break
-		}
-	}
-	i, err := strconv.ParseInt(in, 10, 64)
-	if err != nil {
-		return 0
-	}
-	return i * mul
-}
-
-func OutputScanner(reader io.Reader, callback func(int64)) {
+// OutputScanner will keep scanning for "%d bytes" in a io.Reader and call
+// the supplied callback when it matches. Any line not starting with an integer
+// will be printed to given output.
+func OutputScanner(reader io.Reader, output io.Writer, callback func(int64)) {
 	scanner := bufio.NewScanner(reader)
 
 	go func() {
 		for scanner.Scan() {
 			line := scanner.Text()
-			if !unicode.IsDigit(rune(line[0])) {
-				fmt.Println(line)
+			if !unicode.IsDigit(rune(line[0])) && output != nil {
+				fmt.Fprintln(output, line)
 				continue
 			}
 			var bytes int64
@@ -158,6 +98,7 @@ func OutputScanner(reader io.Reader, callback func(int64)) {
 	}()
 }
 
+// Interrupter will send the `InfoSignal` to the given process every interval.
 func Interrupter(process *os.Process, interval time.Duration) {
 	go func() {
 		for {
@@ -167,6 +108,8 @@ func Interrupter(process *os.Process, interval time.Duration) {
 	}()
 }
 
+// Trap will listen for all stop signals and pass them along to the given
+// process.
 func Trap(process *os.Process) {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGINT, syscall.SIGKILL, syscall.SIGQUIT)
